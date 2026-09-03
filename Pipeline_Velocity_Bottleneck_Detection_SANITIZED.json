@@ -1,0 +1,526 @@
+{
+  "name": "Pipeline Velocity Bottleneck Detection v1.1",
+  "nodes": [
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "value": "1DzBdF6qR1bXw0wYQM3pjgGF7oaaVUrqVA9DXqwvFkGw",
+          "mode": "list",
+          "cachedResultName": "Weekly_Trend_Tracker_Simple",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1DzBdF6qR1bXw0wYQM3pjgGF7oaaVUrqVA9DXqwvFkGw/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": 1384435631,
+          "mode": "list",
+          "cachedResultName": "Weekly_Trend_Tracker_Simple",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1DzBdF6qR1bXw0wYQM3pjgGF7oaaVUrqVA9DXqwvFkGw/edit#gid=1384435631"
+        },
+        "options": {
+          "dataLocationOnSheet": {
+            "values": {
+              "rangeDefinition": "specifyRangeA1",
+              "range": "D2:D53"
+            }
+          }
+        }
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.3,
+      "position": [
+        752,
+        96
+      ],
+      "id": "0dc7fbd1-192f-4c4c-8fa8-209c9ebbfac5",
+      "name": "Read Config Sheet"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Calculate Trend: Week-over-week at-risk deal comparison\n\nconst summary = $input.first().json;\nconst currentAtRisk = summary.totalAtRisk || 0;\n\n// Hardcode previous week for now\nconst PREVIOUS_WEEK_AT_RISK = 8;\n\n// Calculate trend\nconst trend = currentAtRisk - PREVIOUS_WEEK_AT_RISK;\nconst trendPercent = PREVIOUS_WEEK_AT_RISK > 0 \n  ? Math.round((trend / PREVIOUS_WEEK_AT_RISK) * 100) \n  : 0;\n\nlet trendEmoji, trendLabel;\nif (trend > 0) {\n  trendEmoji = '\ud83d\udd34';\n  trendLabel = 'Worse';\n} else if (trend < 0) {\n  trendEmoji = '\ud83d\udfe2';\n  trendLabel = 'Better';\n} else {\n  trendEmoji = '\u26aa';\n  trendLabel = 'Flat';\n}\n\nconst trendString = trend !== 0 \n  ? `${trendEmoji} ${trend > 0 ? '+' : ''}${trend} deals (was ${PREVIOUS_WEEK_AT_RISK})`\n  : `${trendEmoji} Flat (was ${PREVIOUS_WEEK_AT_RISK} deals)`;\n\nreturn {\n  ...summary,  // Pass through all summary data (totalAtRisk, byStage, topRiskDeals, etc.)\n  currentAtRisk,\n  previousWeekAtRisk: PREVIOUS_WEEK_AT_RISK,\n  trend,\n  trendPercent,\n  trendEmoji,\n  trendLabel,\n  trendString\n};"
+      },
+      "name": "Calculate Trend",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1248,
+        464
+      ],
+      "id": "f6281e39-21b5-44ef-8575-499c5b29d0ca"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Calculate Stage Stats: Average days-in-stage per stage, tiered revenue-at-risk, identify bottlenecks\nconst deals = $input.all().map(d => d.json);\nconst stages = ['Qualified Lead', 'Discovery', 'Proposal/Demo', 'Negotiation'];\nconst stageStats = {};\n\nlet slowestStage = null;\nlet slowestAvgDays = 0;\nlet fastestStage = null;\nlet fastestAvgDays = Infinity;\n\nlet totalHighRiskRevenue = 0;\nlet totalMediumRiskRevenue = 0;\nlet totalHighRiskCount = 0;\nlet totalMediumRiskCount = 0;\n\nstages.forEach(stage => {\n  const stageDeals = deals.filter(\n    d => d.stage === stage && d.risk_level !== 'CLOSED' && d.risk_level !== 'UNKNOWN'\n  );\n\n  if (stageDeals.length > 0) {\n    const totalDays = stageDeals.reduce((sum, d) => sum + d.days_in_stage, 0);\n    const avgDays = Math.round(totalDays / stageDeals.length);\n\n    const highRiskDeals = stageDeals.filter(d => d.risk_level === 'HIGH');\n    const mediumRiskDeals = stageDeals.filter(d => d.risk_level === 'MEDIUM');\n    const okDeals = stageDeals.filter(d => d.risk_level === 'OK');\n\n    const highRiskCount = highRiskDeals.length;\n    const mediumRiskCount = mediumRiskDeals.length;\n    const okCount = okDeals.length;\n\n    // Calculate revenue at risk by tier\n    const highRiskRevenue = highRiskDeals.reduce((sum, d) => sum + d.revenue_at_risk, 0);\n    const mediumRiskRevenue = mediumRiskDeals.reduce((sum, d) => sum + d.revenue_at_risk, 0);\n\n    stageStats[stage] = {\n      avgDays,\n      dealCount: stageDeals.length,\n      highRisk: highRiskCount,\n      mediumRisk: mediumRiskCount,\n      ok: okCount,\n      atRiskCount: highRiskCount + mediumRiskCount,\n      highRiskRevenue,\n      mediumRiskRevenue,\n      totalStageRevenue: stageDeals.reduce((sum, d) => sum + d.revenue_at_risk, 0)\n    };\n\n    // Accumulate totals\n    totalHighRiskRevenue += highRiskRevenue;\n    totalMediumRiskRevenue += mediumRiskRevenue;\n    totalHighRiskCount += highRiskCount;\n    totalMediumRiskCount += mediumRiskCount;\n\n    // Track slowest/fastest\n    if (avgDays > slowestAvgDays) {\n      slowestAvgDays = avgDays;\n      slowestStage = stage;\n    }\n    if (avgDays < fastestAvgDays) {\n      fastestAvgDays = avgDays;\n      fastestStage = stage;\n    }\n  } else {\n    stageStats[stage] = {\n      avgDays: 0,\n      dealCount: 0,\n      highRisk: 0,\n      mediumRisk: 0,\n      ok: 0,\n      atRiskCount: 0,\n      highRiskRevenue: 0,\n      mediumRiskRevenue: 0,\n      totalStageRevenue: 0\n    };\n  }\n});\n\nconst slaThresholds = {\n  'Qualified Lead': 5,\n  'Discovery': 5,\n  'Proposal/Demo': 21,\n  'Negotiation': 14\n};\n\nconst bottlenecks = [];\nstages.forEach(stage => {\n  const stats = stageStats[stage];\n  const sla = slaThresholds[stage];\n\n  if (stats.dealCount > 0 && stats.avgDays > sla) {\n    bottlenecks.push({\n      stage,\n      avgDays: stats.avgDays,\n      sla,\n      daysOverSla: stats.avgDays - sla,\n      dealCount: stats.dealCount,\n      atRiskCount: stats.atRiskCount,\n      highRiskRevenue: stats.highRiskRevenue,\n      mediumRiskRevenue: stats.mediumRiskRevenue\n    });\n  }\n});\n\nconst bottleneckWarnings = bottlenecks\n  .sort((a, b) => b.daysOverSla - a.daysOverSla)\n  .map(b => `${b.stage}: ${b.avgDays} days avg (SLA: ${b.sla}, +${b.daysOverSla} days over)`)\n  .join('\\n');\n\nreturn {\n  stageStats,\n  slowestStage,\n  slowestAvgDays,\n  fastestStage,\n  fastestAvgDays,\n  bottleneckCount: bottlenecks.length,\n  bottlenecks,\n  bottleneckWarnings,\n  // Summary-level risk metrics\n  highRiskRevenue: totalHighRiskRevenue,\n  mediumRiskRevenue: totalMediumRiskRevenue,\n  highRiskCount: totalHighRiskCount,\n  mediumRiskCount: totalMediumRiskCount,\n  totalAtRiskRevenue: totalHighRiskRevenue + totalMediumRiskRevenue\n};"
+      },
+      "name": "Calculate Stage Stats",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1248,
+        640
+      ],
+      "id": "4505a8fb-24d2-4d00-9eba-33f2f27d3689"
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "combinationMode": "mergeByPosition",
+        "options": {}
+      },
+      "name": "Merge Results",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 2.1,
+      "position": [
+        1600,
+        656
+      ],
+      "id": "37b2c6ad-be69-43f6-8b07-986f9daedacb"
+    },
+    {
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "value": "1DzBdF6qR1bXw0wYQM3pjgGF7oaaVUrqVA9DXqwvFkGw",
+          "mode": "list",
+          "cachedResultName": "Weekly_Trend_Tracker_Simple",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1DzBdF6qR1bXw0wYQM3pjgGF7oaaVUrqVA9DXqwvFkGw/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": 1384435631,
+          "mode": "list",
+          "cachedResultName": "Weekly_Trend_Tracker_Simple",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1DzBdF6qR1bXw0wYQM3pjgGF7oaaVUrqVA9DXqwvFkGw/edit#gid=1384435631"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "At-Risk Count": "={{ $json.totalAtRisk }}",
+            "Week Of": "={{ $today }}",
+            "Revenue at Risk": "={{ $('Create Summary1').item.json.totalRevenueAtRisk }}",
+            "Trend %": "={{ $json.trendPercent/100 }}",
+            "Previous Week Count": "={{ $json.previousWeekAtRisk }}",
+            "Slowest Stage": "={{ $json.slowestStage }}",
+            "Bottleneck Count": "={{ $json.bottleneckCount }}"
+          },
+          "matchingColumns": [
+            "At-Risk Count"
+          ],
+          "schema": [
+            {
+              "id": "Week Of",
+              "displayName": "Week Of",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "At-Risk Count",
+              "displayName": "At-Risk Count",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Previous Week Count",
+              "displayName": "Previous Week Count",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Trend %",
+              "displayName": "Trend %",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Revenue at Risk",
+              "displayName": "Revenue at Risk",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Slowest Stage",
+              "displayName": "Slowest Stage",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Bottleneck Count",
+              "displayName": "Bottleneck Count",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Notes",
+              "displayName": "Notes",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "row_number",
+              "displayName": "row_number",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": true,
+              "readOnly": true,
+              "removed": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.3,
+      "position": [
+        1120,
+        96
+      ],
+      "id": "c7cea23e-bca1-43e6-8832-71dd1b11685a",
+      "name": "Update Config (Auto)"
+    },
+    {
+      "parameters": {
+        "content": "## Pipeline Velocity Bottleneck Detection v1.1\nSchedule: Fridays 8 AM  \nOutput: Slack digest\n- Query HubSpot \u2192 Get all open deals\n- Calculate \u2192 Days-in-stage for each deal\n- Classify \u2192 HIGH/MEDIUM/OK risk\n- Quantify \u2192 Revenue at risk\n- Stage Bottleneck Analysis (slowest/fastest stages)\n- Auto-updating config Sheet",
+        "height": 272,
+        "width": 464
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        0,
+        0
+      ],
+      "typeVersion": 1,
+      "id": "f9f91fb9-3b0b-493c-a929-96f11ee93a55",
+      "name": "Sticky Note1"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Calculate Days & Risk - COMBINED (with stage mapping, tiered revenue-at-risk)\nconst stageNameMap = {\n  \"appointmentscheduled\": \"Qualified Lead\",\n  \"qualifiedtobuy\": \"Discovery\",\n  \"presentationscheduled\": \"Proposal/Demo\",\n  \"decisionmakerboughtin\": \"Negotiation\",\n  \"closedwon\": \"Closed Won\",\n  \"closedlost\": \"Closed Lost\"\n};\n\n// SLA thresholds in days\nconst slaThresholds = {\n  \"Qualified Lead\": 5,\n  \"Discovery\": 5,\n  \"Proposal/Demo\": 21,\n  \"Negotiation\": 14\n};\n\n// Revenue-at-risk loss probabilities\nconst lossProability = {\n  \"HIGH\": 0.40,      // 40% for deals significantly overdue\n  \"MEDIUM\": 0.15,    // 15% for deals aging but not critical\n  \"OK\": 0            // 0% for on-track deals\n};\n\nconst deals = $input.all();\nconst today = new Date();\n\nreturn deals.map(deal => {\n  // Extract and normalize deal data\n  const deal_id = deal.json.dealId;\n  const deal_name = deal.json.properties.dealname?.value || 'N/A';\n  const stage_id = deal.json.properties.dealstage?.value || 'Unknown';\n  const stage = stageNameMap[stage_id] || 'Unknown Stage';\n  const amount = parseFloat(deal.json.properties.amount?.value || 0);\n  const stage_entry_date = deal.json.properties['hs_v2_date_entered_current_stage']?.value || null;\n  const owner_id = deal.json.properties.hubspot_owner_id?.value || null;\n\n  // Calculate days in stage\n  let stage_date = stage_entry_date ? new Date(parseInt(stage_entry_date)) : null;\n  let days_in_stage = stage_date ? Math.floor((today - stage_date) / (1000 * 60 * 60 * 24)) : 0;\n\n  // Get SLA threshold for this stage\n  let sla_threshold = slaThresholds[stage] || null;\n\n  // Determine risk level based on SLA\n  let risk_level;\n  if (stage === 'Closed Won' || stage === 'Closed Lost') {\n    risk_level = 'CLOSED';\n  } else if (sla_threshold === null) {\n    risk_level = 'UNKNOWN';\n  } else if (days_in_stage > sla_threshold) {\n    risk_level = 'HIGH';\n  } else if (days_in_stage > (sla_threshold * 0.7)) {\n    risk_level = 'MEDIUM';\n  } else {\n    risk_level = 'OK';\n  }\n\n  // Calculate tiered revenue at risk\n  let revenue_at_risk = amount * (lossProability[risk_level] || 0);\n\n  return {\n    deal_id,\n    deal_name,\n    stage,\n    stage_id,\n    amount,\n    stage_entry_date,\n    owner_id,\n    days_in_stage,\n    sla_threshold,\n    risk_level,\n    revenue_at_risk,\n    stage_date: stage_date ? stage_date.toISOString().split('T')[0] : null\n  };\n});"
+      },
+      "name": "Calculate Days & Risk1",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        624,
+        544
+      ],
+      "id": "df010cad-362e-4140-87b1-d837f19fb9b5"
+    },
+    {
+      "parameters": {
+        "jsCode": "const deals = $input.all().map(d => d.json);\n\nconst highRiskDeals = deals.filter(d => d.risk_level === 'HIGH');\nconst mediumRiskDeals = deals.filter(d => d.risk_level === 'MEDIUM');\n\nconst highRiskCount = highRiskDeals.length;\nconst mediumRiskCount = mediumRiskDeals.length;\nconst totalAtRisk = highRiskCount + mediumRiskCount;\n\n// Calculate tiered revenue at risk\nconst highRiskRevenue = highRiskDeals.reduce((sum, d) => sum + d.revenue_at_risk, 0);\nconst mediumRiskRevenue = mediumRiskDeals.reduce((sum, d) => sum + d.revenue_at_risk, 0);\nconst totalRevenueAtRisk = highRiskRevenue + mediumRiskRevenue;\n\nconst byStage = {\n  'Discovery': deals.filter(d => d.stage === 'Discovery' && d.risk_level !== 'OK').length,\n  'Qualified Lead': deals.filter(d => d.stage === 'Qualified Lead' && d.risk_level !== 'OK').length,\n  'Proposal/Demo': deals.filter(d => d.stage === 'Proposal/Demo' && d.risk_level !== 'OK').length,\n  'Negotiation': deals.filter(d => d.stage === 'Negotiation' && d.risk_level !== 'OK').length\n};\n\nconst topRiskDeals = deals\n  .filter(d => d.risk_level === 'HIGH' || d.risk_level === 'MEDIUM')  // \u2190 Include MEDIUM\n  .sort((a, b) => b.days_in_stage - a.days_in_stage)\n  .slice(0, 3);\n\nreturn {\n  totalAtRisk,\n  highRiskCount,\n  mediumRiskCount,\n  highRiskRevenue: Math.round(highRiskRevenue),\n  mediumRiskRevenue: Math.round(mediumRiskRevenue),\n  totalRevenueAtRisk: Math.round(totalRevenueAtRisk),\n  byStage,\n  topRiskDeals\n};"
+      },
+      "name": "Create Summary1",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        864,
+        544
+      ],
+      "id": "30de3827-89bd-4ff1-9722-b4eb1fd0bdfe"
+    },
+    {
+      "parameters": {
+        "authentication": "oAuth2",
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "value": "C0BRM6P0M4H",
+          "mode": "list",
+          "cachedResultName": "all-ai-automation"
+        },
+        "text": "=\ud83d\udcca *Pipeline Velocity Brief*\n\n\u26a0\ufe0f *Revenue at Risk:*\n\ud83d\udd34 HIGH (likely loss): ${{ $json.highRiskRevenue }}K | {{ $json.highRiskCount }} deals\n\ud83d\udfe1 MEDIUM (possible loss): ${{ $json.mediumRiskRevenue }}K | {{ $json.mediumRiskCount }} deals\n\ud83d\udcc8 *vs Last Week:* {{ $json.trendString }}\n\n*By Stage:*\n- Qualified Lead: {{ $json.stageStats['Qualified Lead'].atRiskCount }} (HIGH: ${{ $json.stageStats['Qualified Lead'].highRiskRevenue }}K)\n- Discovery: {{ $json.stageStats.Discovery.atRiskCount }} (HIGH: ${{ $json.stageStats.Discovery.highRiskRevenue }}K)\n- Proposal/Demo: {{ $json.stageStats['Proposal/Demo'].atRiskCount }} (HIGH: ${{ $json.stageStats['Proposal/Demo'].highRiskRevenue }}K)\n- Negotiation: {{ $json.stageStats.Negotiation.atRiskCount }} (HIGH: ${{ $json.stageStats.Negotiation.highRiskRevenue }}K)\n\n*Pipeline Health:*\n- Slowest: {{ $json.slowestStage }} (avg {{ $json.slowestAvgDays }} days)\n- Fastest: {{ $json.fastestStage }} (avg {{ $json.fastestAvgDays }} days)\n{{ $json.bottleneckCount }} Bottlenecks\n\u26a0\ufe0f {{ $json.bottleneckWarnings }}\n\n*Highest Risk Deals (Priority Order):*\n1\ufe0f\u20e3 *{{ $json.topRiskDeals[0].deal_name }}* [{{ $json.topRiskDeals[0].risk_level }}]\n- Stage: {{ $json.topRiskDeals[0].stage }} | Amount: ${{ $json.topRiskDeals[0].amount }}K | Owner: {{ $json.topRiskDeals[0].owner_id }}\n2\ufe0f\u20e3 *{{ $json.topRiskDeals[1].deal_name }}* [{{ $json.topRiskDeals[1].risk_level }}]\n- Stage: {{ $json.topRiskDeals[1].stage }} | Amount: ${{ $json.topRiskDeals[1].amount }}K | Owner: {{ $json.topRiskDeals[1].owner_id }}\n3\ufe0f\u20e3 *{{ $json.topRiskDeals[2].deal_name }}* [{{ $json.topRiskDeals[2].risk_level }}]\n- Stage: {{ $json.topRiskDeals[2].stage }} | Amount: ${{ $json.topRiskDeals[2].amount }}K | Owner: {{ $json.topRiskDeals[2].owner_id }}\n\n_Generated: {{ $now }}_",
+        "otherOptions": {}
+      },
+      "name": "Post Slack Digest1",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.1,
+      "position": [
+        1920,
+        656
+      ],
+      "id": "270423e4-e7f9-43a2-ba0b-e337138fcf5d",
+      "webhookId": "85d40486-c234-4ad9-9c2e-c44f8c7e2cb3"
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "weeks",
+              "triggerAtDay": [
+                5
+              ],
+              "triggerAtHour": 8
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.3,
+      "position": [
+        48,
+        544
+      ],
+      "id": "5a538b8d-6104-46cd-ad57-482f3ad98d09",
+      "name": "Schedule Trigger1"
+    },
+    {
+      "parameters": {
+        "authentication": "appToken",
+        "resource": "deal",
+        "operation": "getAll",
+        "filters": {
+          "properties": [
+            "amount",
+            "closedate",
+            "hs_closed_amount",
+            "hs_closed_won_date",
+            "createdate",
+            "hs_v2_cumulative_time_in_appointmentscheduled",
+            "hs_v2_cumulative_time_in_presentationscheduled",
+            "hs_v2_cumulative_time_in_decisionmakerboughtin",
+            "hs_v2_cumulative_time_in_qualifiedtobuy",
+            "hs_v2_date_entered_current_stage",
+            "hs_v2_date_exited_qualifiedtobuy",
+            "hs_v2_date_exited_decisionmakerboughtin",
+            "hs_v2_date_exited_presentationscheduled",
+            "hs_v2_date_exited_appointmentscheduled",
+            "days_to_close",
+            "dealstage",
+            "hs_deal_stage_probability",
+            "notes_last_updated",
+            "dealname",
+            "hubspot_owner_id"
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.hubspot",
+      "typeVersion": 2.2,
+      "position": [
+        240,
+        544
+      ],
+      "id": "3a6eced3-be2e-434a-b792-717ea93467a5",
+      "name": "Get many deals1"
+    },
+    {
+      "parameters": {
+        "content": "## Read & Extract Data\nGets all open deals from HubSpot every Friday at 8am",
+        "height": 544,
+        "width": 464,
+        "color": 5
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        0,
+        320
+      ],
+      "typeVersion": 1,
+      "id": "b47ade0a-52f6-4e8d-bd22-0b5a7e17de52",
+      "name": "Sticky Note2"
+    },
+    {
+      "parameters": {
+        "content": "## Calculate & Aggregate Data\n- Calculates deals at risk based on SLAs\n- Calculates revenue at risk\n- Aggregates deals at risk by stage and identifies highest risk deals\n- Calculates trends vs. last week\n- Calculates stage stats to identify bottlenecks in sales cycle\n- Merges results for Slack digest",
+        "height": 544,
+        "width": 1232,
+        "color": 4
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        560,
+        320
+      ],
+      "typeVersion": 1,
+      "id": "797d06fd-e57b-4270-bdac-ce2a050a6a75",
+      "name": "Sticky Note3"
+    },
+    {
+      "parameters": {
+        "content": "## Read & Update Data\nReads and maintains database for trend calculation",
+        "height": 272,
+        "width": 1232,
+        "color": 5
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        560,
+        0
+      ],
+      "typeVersion": 1,
+      "id": "fcc5f769-6dec-410f-8512-78140d516c79",
+      "name": "Sticky Note4"
+    },
+    {
+      "parameters": {
+        "content": "## Distribute Data\nSends summary to Slack Channel",
+        "height": 544,
+        "width": 304,
+        "color": 6
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        1824,
+        320
+      ],
+      "typeVersion": 1,
+      "id": "4194b3e9-062a-4b52-adb9-42f1afec4024",
+      "name": "Sticky Note5"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Read Config Sheet": {
+      "main": [
+        [
+          {
+            "node": "Calculate Trend",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Calculate Trend": {
+      "main": [
+        [
+          {
+            "node": "Merge Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Calculate Stage Stats": {
+      "main": [
+        [
+          {
+            "node": "Merge Results",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Merge Results": {
+      "main": [
+        [
+          {
+            "node": "Post Slack Digest1",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Update Config (Auto)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Calculate Days & Risk1": {
+      "main": [
+        [
+          {
+            "node": "Create Summary1",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Calculate Stage Stats",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Summary1": {
+      "main": [
+        [
+          {
+            "node": "Calculate Trend",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Update Config (Auto)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Schedule Trigger1": {
+      "main": [
+        [
+          {
+            "node": "Get many deals1",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Read Config Sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get many deals1": {
+      "main": [
+        [
+          {
+            "node": "Calculate Days & Risk1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "REPLACE_WITH_YOUR_VERSION_ID",
+  "meta": {
+    "instanceId": "REPLACE_WITH_YOUR_INSTANCE_ID"
+  },
+  "nodeGroups": [],
+  "id": "REPLACE_WITH_YOUR_WORKFLOW_ID",
+  "tags": []
+}
