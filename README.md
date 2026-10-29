@@ -2,7 +2,7 @@
 
 Automated weekly pipeline health reporting for B2B SaaS sales teams. Detects deal stalls, identifies bottleneck stages, and quantifies revenue at risk, delivered to Slack every Friday morning.
 
-**Current version:** v2.0. See [CHANGELOG](#changelog). Earlier versions are in [`archive/`](archive/).
+**Current version:** v2.1. See [CHANGELOG](#changelog). Earlier versions are in [`archive/`](archive/).
 
 ## Problem
 
@@ -16,9 +16,9 @@ An n8n automation that runs weekly (Friday, 8 AM) to:
 - Classify each open deal's risk (HIGH/MEDIUM/OK) by **days in stage vs. SLA** combined with **days since last activity**
 - Quantify revenue at risk using tiered loss probabilities (HIGH 40%, MEDIUM 15%)
 - Detect bottleneck stages from **historical stage velocity**: the typical (median) time deals spent in a stage before moving on
-- Flag stages whose open deals are already aging past the SLA
+- Run a data check that warns when many open deals have no activity logged
 - Track week-over-week trends in Google Sheets
-- Post a formatted Slack digest with owner names and the reason each top deal is at risk
+- Post a compact Slack digest that shows the most important numbers at first glance and the top 3 deals to act on
 
 ## Architecture
 
@@ -29,12 +29,12 @@ An n8n automation that runs weekly (Friday, 8 AM) to:
 3. **Get HubSpot Owners** (HTTP Request): maps owner IDs to names; continues with IDs if the request fails
 4. **Get All HubSpot Deals** (HubSpot): fetches all deals with a defined property list, including last activity and per-stage history
 5. **Calculate Days & Risk** (Code): maps stages, calculates days in stage and days since last activity, classifies risk with a reason, computes revenue at risk, extracts per-stage history, flags data issues
-6. **Create Risk Summary** (Code): counts at-risk and quiet deals, splits revenue at risk into HIGH/MEDIUM, ranks the top 3 deals
+6. **Create Risk Summary** (Code): counts at-risk and quiet deals, splits revenue at risk into HIGH/MEDIUM, ranks the top 3 deals, runs the data check
 7. **Read Trend History** (Google Sheets): reads previous weekly snapshots
 8. **Calculate Trend** (Code): week-over-week comparison; reports a baseline week on the first run
 9. **Calculate Stage Stats** (Code): typical time per stage (median, last 90 days), slowest/fastest stage vs. SLA, bottlenecks, aging warning
 10. **Merge Results**: combines trend and stage data
-11. **Post Slack Digest** (Slack): posts the weekly brief
+11. **Post Slack Digest** (Slack): posts the compact weekly brief (no n8n footer)
 12. **Save Weekly Snapshot** (Google Sheets): writes one row per week, matched on `Week Of`
 
 ### Data Flow
@@ -96,9 +96,19 @@ A stage is a **bottleneck** when the typical time deals spend in it is above its
 - **Typical time** = the median of HubSpot's `hs_v2_cumulative_time_in_<stageId>` for deals that left the stage (`hs_v2_date_exited_<stageId>`) within the last `velocityLookbackDays` (default 90).
 - A stage needs at least `velocityMinSample` (default 3) such deals before a typical time is shown; otherwise the digest shows "n/a".
 - Slowest and fastest stage are ranked **relative to each stage's SLA**, since stages have different expected lengths.
-- **Aging** is a separate, current signal: the average days open deals have already spent in a stage. If it's above the SLA, the stage is flagged as "aging now" even if its historical velocity is fine.
+- **Aging** (the average days open deals have already spent in a stage) is still calculated and available in the workflow data (`agingStages`), but isn't shown in the Slack digest. At-risk deals already cover that signal.
 
-Why two signals: averaging the age of open deals tells you how old today's pipeline is, not how fast deals actually move. HubSpot only fills the cumulative-time properties once a deal has left a stage, so velocity has to come from deal history.
+Why velocity instead of open-deal age: averaging the age of open deals tells you how old today's pipeline is, not how fast deals actually move. HubSpot only fills the cumulative-time properties once a deal has left a stage, so velocity has to come from deal history.
+
+### Data Check
+
+Deals without any logged activity count as **quiet** on purpose: a stage move alone doesn't count as activity, so missing call/email logging or a stage moved without a real action stays visible instead of being hidden.
+
+To make the cause visible, the digest adds one warning line when:
+- at least `dataQualityWarningShare` (default 50%) of open deals have **no activity ever logged**, or
+- deals can't be classified (stage not in Pipeline Settings, or missing stage entry date).
+
+Example: `⚠️ Data check: 16 of 16 open deals have no activity logged. Check CRM logging.` The line disappears when the data is healthy.
 
 ## Setup
 
@@ -112,7 +122,7 @@ Why two signals: averaging the age of open deals tells you how old today's pipel
 ### Steps
 
 1. **Import the workflow**
-   - In n8n: ⋯ → Import from File → `hubspot-Pipeline-Velocity-Bottleneck-Detection-v2.0.json`
+   - In n8n: ⋯ → Import from File → `hubspot-Pipeline-Velocity-Bottleneck-Detection-v2.1.json`
    - The JSON contains no credentials; you'll connect your own in the next steps
 
 2. **Connect HubSpot**
@@ -135,7 +145,7 @@ Why two signals: averaging the age of open deals tells you how old today's pipel
 
 6. **Edit Pipeline Settings**
    - Replace the stage IDs, SLA days and currency with your own
-   - Adjust `activityThresholdDays`, `velocityLookbackDays` and `velocityMinSample` if needed
+   - Adjust `activityThresholdDays`, `velocityLookbackDays`, `velocityMinSample` and `dataQualityWarningShare` if needed
 
 7. **Check the schedule**
    - Default: every Friday, 08:00
@@ -151,38 +161,24 @@ Why two signals: averaging the age of open deals tells you how old today's pipel
 ## Example Output
 
 ```
-📊 *Pipeline Velocity Brief*
+📊 *Pipeline Brief · 29 Oct 2026*
+*€16,250 at risk* · 3 of 4 open deals · 🔴 +1 vs last week
+🔴 1 HIGH · 🟡 2 MEDIUM
 
-⚠️ *Revenue at Risk:* €16,250 across 3 of 4 open deals
-🔴 HIGH (past SLA, no recent activity): €8,000 | 1 deals
-🟡 MEDIUM (past SLA but active, or close to SLA and quiet): €8,250 | 2 deals
-💤 Quiet deals (no activity in 7+ days): 2
-📈 *vs Last Week:* 🔴 +1 deals (was 2)
+⚠️ Bottleneck: Discovery (typically 7d vs 5d SLA)
 
-*By Stage:*
-• Qualified Lead: 0 at risk of 0 open | typical time n/a (n=0) vs SLA 5d | open avg 0d
-• Discovery: 2 at risk of 2 open | typically 7d (n=3) vs SLA 5d | open avg 9d
-• Proposal/Demo: 1 at risk of 1 open | typically 12d (n=3) vs SLA 21d | open avg 16d
-• Negotiation: 0 at risk of 1 open | typical time n/a (n=2) vs SLA 14d | open avg 3d
+*Act on these first:*
+1. 🔴 *Acme Legal* · €20k · Discovery 10d (SLA 5) · quiet 12d · Lena Vogt
+2. 🟡 *Gamma Tax* · €40k · Proposal/Demo 16d (SLA 21) · quiet 10d · Lena Vogt
+3. 🟡 *Beta Consulting* · €15k · Discovery 8d (SLA 5) · active 2d ago · Jonas Ritter
+```
 
-*Pipeline Health:*
-• Slowest vs SLA: Discovery (typically 7 days, SLA 5)
-• Fastest vs SLA: Proposal/Demo (typically 12 days, SLA 21)
-_Typical = median for deals that left the stage in the last 90 days_
-⚠️ 1 bottleneck (typical time above SLA):
-• Discovery: typically 7 days (SLA 5, +2) | based on 3 deals
-⏳ Aging now (open deals avg above SLA): Discovery (9d)
+When the data check or history is missing, the middle lines change, for example:
 
-*Highest Risk Deals (Priority Order):*
-1️⃣ *Acme Legal* [HIGH]
-• Discovery: 10 days (SLA 5) | past SLA (+5 days), no activity for 12 days
-• Amount: €20,000 | Owner: Lena Vogt
-2️⃣ *Gamma Tax* [MEDIUM]
-• Proposal/Demo: 16 days (SLA 21) | close to SLA, no activity for 10 days
-• Amount: €40,000 | Owner: Lena Vogt
-3️⃣ *Beta Consulting* [MEDIUM]
-• Discovery: 8 days (SLA 5) | past SLA (+3 days), active 2 days ago
-• Amount: €15,000 | Owner: Jonas Ritter
+```
+⚠️ Data check: 16 of 16 open deals have no activity logged. Check CRM logging.
+
+ℹ️ Not enough history for bottlenecks yet
 ```
 
 *Example data is illustrative (fictional test deals).*
@@ -209,7 +205,8 @@ _Typical = median for deals that left the stage in the last 90 days_
 - If HubSpot uses a different property name for a stage, add `propertyKey` to that stage in **Pipeline Settings**
 
 ### Too many deals marked as quiet
-- Check whether your team logs activities in HubSpot; deals with no logged activity count as quiet
+- Check whether your team logs activities in HubSpot; deals with no logged activity count as quiet (the data check line tells you when this affects most deals)
+- Moving a deal to another stage does **not** update HubSpot's *Last activity date*; only logged calls, emails, meetings, notes, tasks and chats do
 - Raise `activityThresholdDays` if your sales cycle has longer natural gaps
 
 ### Trend not calculating or duplicate rows in Google Sheets
@@ -227,6 +224,15 @@ _Typical = median for deals that left the stage in the last 90 days_
 The workflow uses tiered loss probabilities (HIGH 40%, MEDIUM 15%). Since v2.0, HIGH means a deal is both overdue and quiet, which is a stronger loss signal than deal age alone. The percentages are still assumptions: **validate them against your historical data** and adjust them in Pipeline Settings.
 
 ## Changelog
+
+### v2.1: Compact Slack digest and data check
+- Slack digest rebuilt for first-glance reading: revenue at risk, trend, tier counts, bottleneck and the top 3 deals, one line each
+- Stage breakdown, slowest/fastest stage and aging lines removed from Slack (still available in the workflow data)
+- New data check: warns when at least half of open deals have no activity logged, or deals can't be classified
+- Deals without logged activity still count as quiet, so missing logging stays visible
+- Removed the "Automated with this n8n workflow" footer
+- New Pipeline Setting: `dataQualityWarningShare`
+- v2.0 moved to `archive/`
 
 ### v2.0: Activity signal and historical stage velocity
 - Risk tiers now combine days in stage vs. SLA with days since last activity: HIGH = past SLA and quiet; MEDIUM = past SLA but active, or close to SLA and quiet

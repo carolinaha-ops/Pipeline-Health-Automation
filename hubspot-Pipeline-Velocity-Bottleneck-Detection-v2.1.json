@@ -1,0 +1,558 @@
+{
+  "name": "Detect HubSpot pipeline bottlenecks and send a weekly Slack risk digest",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## Weekly HubSpot pipeline bottleneck & risk digest (v2.1)\n\n### Who it's for\nRevOps, sales leaders and founders who want to catch stalled deals before they slip, without building a BI dashboard.\n\n### How it works\n1. Every Friday at 8 AM the workflow loads your **Pipeline Settings** (stages, SLA days, activity threshold, velocity window, currency, loss probabilities).\n2. It fetches HubSpot owners (to show names) and all deals.\n3. Each open deal is classified by **days in stage vs. SLA** and **days since last activity**:\n   - **HIGH**: past SLA and no activity in the last 7 days\n   - **MEDIUM**: past SLA but still active, or past 70% of SLA and quiet\n   - **OK**: everything else\n4. Revenue at risk is estimated per tier (default 40% / 15% / 0% of the deal amount).\n5. **Stage velocity**: the median time deals spent in each stage (deals that left it in the last 90 days) is compared with the SLA to flag bottlenecks.\n6. **Data check**: if at least half of the open deals have no activity logged, or deals can't be classified, the digest says so. Deals without logged activity still count as quiet, so missing logging stays visible.\n7. The week-over-week trend is calculated from a Google Sheet, and this week's snapshot is saved.\n8. A compact Slack digest shows revenue at risk, the trend, the data check, the bottleneck and the top 3 deals to act on.\n\n### Setup\n1. **HubSpot:** create a private app with scopes `crm.objects.deals.read` and `crm.objects.owners.read`. Add the token as a *HubSpot App Token* credential in **Get HubSpot Owners** and **Get All HubSpot Deals**.\n2. **Google Sheets:** create a sheet tab named `Weekly_Trend_Tracker_Simple` with the headers `Week Of`, `At-Risk Count`, `Previous Week Count`, `Trend %`, `Revenue at Risk`, `Slowest Stage`, `Bottleneck Count`, `Notes`. Format the `Week Of` column as **Plain text**. Paste the sheet URL into **Read Trend History** and **Save Weekly Snapshot**.\n3. **Slack:** connect your Slack account and set the channel ID in **Post Slack Digest**.\n4. **Pipeline Settings:** replace the stage IDs with your pipeline's internal IDs (HubSpot → Settings → Objects → Deals → Pipelines) and adjust SLA days and currency. Stages not listed are reported as unknown.\n5. **Stage properties:** in **Get All HubSpot Deals**, request `hs_v2_cumulative_time_in_<stageId>` and `hs_v2_date_exited_<stageId>` for every stage in your settings. If HubSpot renamed a property (it can adjust stage IDs to fit naming rules), add `\"propertyKey\"` to that stage in **Pipeline Settings**.\n6. Run once manually to create the baseline row, then activate the workflow.\n\n### Customization\n- `activityThresholdDays` (default 7): when a deal counts as quiet. Uses HubSpot's *Last activity date* (`notes_last_updated`).\n- `velocityLookbackDays` (default 90) and `velocityMinSample` (default 3): window and minimum number of deals before a stage's typical time is shown.\n- `dataQualityWarningShare` (default 0.5): share of open deals without any logged activity that triggers the data check.\n- Tune `mediumThresholdShare` and the loss probabilities to match your historical close rates.\n- Change the day/time in **Every Friday 8 AM**; the timezone comes from the workflow settings.\n- If the owners request fails (missing scope), the digest falls back to owner IDs.",
+        "height": 1104,
+        "width": 640
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -704,
+        0
+      ],
+      "id": "64c112be-313d-4c52-b7b8-f84d491c8f93",
+      "name": "Overview & Setup"
+    },
+    {
+      "parameters": {
+        "content": "## 1. Load settings & HubSpot data\nRuns every Friday at 8 AM. ✏️ Edit **Pipeline Settings** to match your pipeline, then fetch owners and all deals.",
+        "height": 544,
+        "width": 800,
+        "color": 5
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        0,
+        320
+      ],
+      "id": "87ad363e-9aaf-417c-a97b-b96ae3c17fdc",
+      "name": "Sticky Note2"
+    },
+    {
+      "parameters": {
+        "content": "## 2. Classify risk & find bottlenecks\n- Classifies each open deal by stage age vs. SLA **and** days since last activity\n- Calculates tiered revenue at risk\n- Prioritizes the top 3 risk deals (tier → revenue at risk → days) with a reason\n- Stage velocity: median time in stage for deals that left it in the last 90 days → bottlenecks\n- Data check: warns when many open deals have no activity logged\n- Merges results for the Slack digest",
+        "height": 544,
+        "width": 1232,
+        "color": 4
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        896,
+        320
+      ],
+      "id": "775d4d73-b022-4d87-8f87-ce84b1e11a21",
+      "name": "Sticky Note3"
+    },
+    {
+      "parameters": {
+        "content": "## 3. Trend history (Google Sheets)\nReads previous weeks to calculate the trend, then saves one row per week (matched on `Week Of`).",
+        "height": 272,
+        "width": 1232,
+        "color": 5
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        896,
+        0
+      ],
+      "id": "a77d5be4-475d-49ae-856d-dbce22123b3b",
+      "name": "Sticky Note4"
+    },
+    {
+      "parameters": {
+        "content": "## 4. Send Slack digest\nPosts a compact weekly brief: revenue at risk, trend, data check, bottleneck and the top 3 deals to act on.",
+        "height": 544,
+        "width": 304,
+        "color": 6
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        2160,
+        320
+      ],
+      "id": "979ed593-8fa9-4c13-9a94-1b6478cf7d08",
+      "name": "Sticky Note5"
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "weeks",
+              "triggerAtDay": [
+                5
+              ],
+              "triggerAtHour": 8
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.3,
+      "position": [
+        48,
+        544
+      ],
+      "id": "afd042dc-cde6-439e-b1aa-10009da4646a",
+      "name": "Every Friday 8 AM"
+    },
+    {
+      "parameters": {
+        "mode": "raw",
+        "jsonOutput": "{\n  \"currency\": \"€\",\n  \"stages\": [\n    { \"id\": \"appointmentscheduled\", \"name\": \"Qualified Lead\", \"slaDays\": 5 },\n    { \"id\": \"qualifiedtobuy\", \"name\": \"Discovery\", \"slaDays\": 5 },\n    { \"id\": \"presentationscheduled\", \"name\": \"Proposal/Demo\", \"slaDays\": 21 },\n    { \"id\": \"decisionmakerboughtin\", \"name\": \"Negotiation\", \"slaDays\": 14 }\n  ],\n  \"closedWonStageId\": \"closedwon\",\n  \"closedLostStageId\": \"closedlost\",\n  \"mediumThresholdShare\": 0.7,\n  \"activityThresholdDays\": 7,\n  \"velocityLookbackDays\": 90,\n  \"velocityMinSample\": 3,\n  \"dataQualityWarningShare\": 0.5,\n  \"lossProbabilityHigh\": 0.4,\n  \"lossProbabilityMedium\": 0.15\n}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        240,
+        544
+      ],
+      "id": "a5cc7d99-ecad-4ec1-83fb-9aad305e7343",
+      "name": "Pipeline Settings",
+      "notes": "Edit stage IDs, SLA days, activity threshold, velocity window, currency and loss probabilities here"
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "https://api.hubapi.com/crm/v3/owners",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "hubspotAppToken",
+        "sendQuery": true,
+        "specifyQuery": "keypair",
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "limit",
+              "value": "500"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        432,
+        544
+      ],
+      "id": "d2dcffbe-e379-4bce-b4c4-55df534e7c09",
+      "name": "Get HubSpot Owners",
+      "notes": "Maps owner IDs to names. Needs scope crm.objects.owners.read",
+      "onError": "continueRegularOutput",
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "authentication": "appToken",
+        "resource": "deal",
+        "operation": "getAll",
+        "returnAll": true,
+        "filters": {
+          "properties": [
+            "amount",
+            "closedate",
+            "hs_closed_amount",
+            "hs_closed_won_date",
+            "createdate",
+            "hs_v2_cumulative_time_in_appointmentscheduled",
+            "hs_v2_cumulative_time_in_presentationscheduled",
+            "hs_v2_cumulative_time_in_decisionmakerboughtin",
+            "hs_v2_cumulative_time_in_qualifiedtobuy",
+            "hs_v2_date_entered_current_stage",
+            "hs_v2_date_exited_qualifiedtobuy",
+            "hs_v2_date_exited_decisionmakerboughtin",
+            "hs_v2_date_exited_presentationscheduled",
+            "hs_v2_date_exited_appointmentscheduled",
+            "days_to_close",
+            "dealstage",
+            "hs_deal_stage_probability",
+            "notes_last_updated",
+            "dealname",
+            "hubspot_owner_id"
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.hubspot",
+      "typeVersion": 2.2,
+      "position": [
+        624,
+        544
+      ],
+      "id": "711d11e9-444a-477e-99f9-eea556a7c3e3",
+      "name": "Get All HubSpot Deals",
+      "executeOnce": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// Calculate Days & Risk (v2.0)\n// Risk = days in current stage vs SLA, combined with days since last activity.\n// Also extracts per-stage history (cumulative time + exit date) for velocity stats.\nconst cfg = $('Pipeline Settings').first().json;\n\nconst stageNameMap = {\n  [cfg.closedWonStageId]: 'Closed Won',\n  [cfg.closedLostStageId]: 'Closed Lost'\n};\nconst slaThresholds = {};\ncfg.stages.forEach(s => {\n  stageNameMap[s.id] = s.name;\n  slaThresholds[s.name] = Number(s.slaDays);\n});\n\nconst lossProbability = {\n  HIGH: Number(cfg.lossProbabilityHigh),\n  MEDIUM: Number(cfg.lossProbabilityMedium),\n  OK: 0\n};\nconst mediumShare = Number(cfg.mediumThresholdShare);\nconst activityThreshold = Number(cfg.activityThresholdDays ?? 7);\n\n// Owner ID -> name (falls back to the ID if the owners request failed)\nconst ownerMap = {};\nconst ownersResponse = $('Get HubSpot Owners').first().json || {};\n(ownersResponse.results || []).forEach(o => {\n  const name = [o.firstName, o.lastName].filter(Boolean).join(' ').trim();\n  ownerMap[String(o.id)] = name || o.email || String(o.id);\n});\n\nconst MS_PER_DAY = 1000 * 60 * 60 * 24;\nconst today = new Date();\n\n// Accepts epoch milliseconds (number or numeric string) or an ISO date string\nconst parseHubSpotDate = value => {\n  if (value === null || value === undefined || value === '') return null;\n  const str = String(value).trim();\n  const date = /^[0-9]+$/.test(str) ? new Date(Number(str)) : new Date(str);\n  return isNaN(date.getTime()) ? null : date;\n};\nconst parseNumber = value => {\n  if (value === null || value === undefined || value === '') return null;\n  const n = Number(value);\n  return Number.isFinite(n) ? n : null;\n};\nconst daysSince = date => (date ? Math.floor((today - date) / MS_PER_DAY) : null);\n\nreturn $input.all().map(deal => {\n  const props = deal.json.properties || {};\n  const val = key => props[key]?.value;\n\n  const deal_id = deal.json.dealId;\n  const deal_name = val('dealname') || 'N/A';\n  const stage_id = val('dealstage') || 'Unknown';\n  const stage = stageNameMap[stage_id] || 'Unknown Stage';\n  const amount = parseFloat(val('amount') || 0) || 0;\n  const stage_entry_date = val('hs_v2_date_entered_current_stage') || null;\n  const owner_id = val('hubspot_owner_id') || null;\n  const owner_name = owner_id ? (ownerMap[String(owner_id)] || `Owner ${owner_id}`) : 'Unassigned';\n\n  // Days in current stage\n  const stage_date = parseHubSpotDate(stage_entry_date);\n  const days_in_stage = stage_date ? daysSince(stage_date) : 0;\n  const sla_threshold = slaThresholds[stage] ?? null;\n\n  // Days since last activity (notes_last_updated = HubSpot \"Last activity date\")\n  const last_activity_date = parseHubSpotDate(val('notes_last_updated'));\n  const days_since_activity = daysSince(last_activity_date);\n  const is_inactive = days_since_activity === null || days_since_activity > activityThreshold;\n  const activityText = days_since_activity === null\n    ? 'no activity logged'\n    : (is_inactive ? `no activity for ${days_since_activity} days` : `active ${days_since_activity} days ago`);\n  // Short label for the Slack digest\n  const activity_short = days_since_activity === null\n    ? 'no activity logged'\n    : (is_inactive ? `quiet ${days_since_activity}d` : `active ${days_since_activity}d ago`);\n\n  // Data quality flags\n  const isClosed = stage === 'Closed Won' || stage === 'Closed Lost';\n  let data_issue = null;\n  if (!isClosed && stage === 'Unknown Stage') data_issue = 'stage_not_in_pipeline_settings';\n  else if (!isClosed && !stage_date) data_issue = 'missing_stage_entry_date';\n\n  // Risk matrix: stage age x activity\n  //   past SLA + inactive            -> HIGH\n  //   past SLA + recent activity     -> MEDIUM\n  //   past 70% of SLA + inactive     -> MEDIUM\n  //   everything else                -> OK\n  let risk_level, age_status = null, risk_reason = null;\n  if (isClosed) risk_level = 'CLOSED';\n  else if (sla_threshold === null || !stage_date) risk_level = 'UNKNOWN';\n  else {\n    if (days_in_stage > sla_threshold) age_status = 'past_sla';\n    else if (days_in_stage > sla_threshold * mediumShare) age_status = 'approaching_sla';\n    else age_status = 'on_track';\n\n    if (age_status === 'past_sla' && is_inactive) risk_level = 'HIGH';\n    else if (age_status === 'past_sla') risk_level = 'MEDIUM';\n    else if (age_status === 'approaching_sla' && is_inactive) risk_level = 'MEDIUM';\n    else risk_level = 'OK';\n\n    const ageText = age_status === 'past_sla'\n      ? `past SLA (+${days_in_stage - sla_threshold} days)`\n      : age_status === 'approaching_sla' ? 'close to SLA' : 'within SLA';\n    risk_reason = `${ageText}, ${activityText}`;\n  }\n\n  const revenue_at_risk = amount * (lossProbability[risk_level] || 0);\n\n  // Per-stage history for velocity: cumulative time (ms) and exit date per configured stage.\n  // HubSpot only fills these once a deal has LEFT the stage.\n  const stage_history = {};\n  cfg.stages.forEach(s => {\n    const key = s.propertyKey || s.id;\n    const cumulativeMs = parseNumber(val(`hs_v2_cumulative_time_in_${key}`));\n    const exitedAt = parseHubSpotDate(val(`hs_v2_date_exited_${key}`));\n    if (cumulativeMs !== null && exitedAt) {\n      stage_history[s.name] = {\n        days: Math.round((cumulativeMs / MS_PER_DAY) * 10) / 10,\n        exitedAt: exitedAt.toISOString()\n      };\n    }\n  });\n\n  return {\n    json: {\n      deal_id,\n      deal_name,\n      stage,\n      stage_id,\n      amount,\n      stage_entry_date,\n      owner_id,\n      owner_name,\n      days_in_stage,\n      sla_threshold,\n      days_since_activity,\n      is_inactive,\n      activity_short,\n      age_status,\n      risk_level,\n      risk_reason,\n      revenue_at_risk,\n      data_issue,\n      stage_history,\n      stage_date: stage_date ? stage_date.toISOString().split('T')[0] : null\n    }\n  };\n});"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        960,
+        544
+      ],
+      "id": "6709e28a-aec2-4a0d-b782-f3f580df460a",
+      "name": "Calculate Days & Risk"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Create Risk Summary (v2.1): risk counts, tiered revenue at risk, top-3 deals, data quality check\nconst deals = $input.all().map(d => d.json);\nconst cfg = $('Pipeline Settings').first().json;\nconst CURRENCY = cfg.currency || '';\nconst fmt = n => CURRENCY + Math.round(n || 0).toLocaleString('en-US');\n// Compact amounts for deal lines: €450k, €1.2M\nconst fmtShort = n => {\n  const v = Math.round(n || 0);\n  if (v >= 1e6) return `${CURRENCY}${(v / 1e6).toFixed(1).replace(/\\.0$/, '')}M`;\n  if (v >= 1e3) return `${CURRENCY}${Math.round(v / 1e3)}k`;\n  return `${CURRENCY}${v}`;\n};\nconst sumRisk = list => list.reduce((sum, d) => sum + d.revenue_at_risk, 0);\n\nconst highRiskDeals = deals.filter(d => d.risk_level === 'HIGH');\nconst mediumRiskDeals = deals.filter(d => d.risk_level === 'MEDIUM');\nconst openDeals = deals.filter(d => d.risk_level !== 'CLOSED' && d.risk_level !== 'UNKNOWN');\n\nconst highRiskCount = highRiskDeals.length;\nconst mediumRiskCount = mediumRiskDeals.length;\nconst totalAtRisk = highRiskCount + mediumRiskCount;\nconst inactiveOpenCount = openDeals.filter(d => d.is_inactive).length;\n\nconst highRiskRevenue = Math.round(sumRisk(highRiskDeals));\nconst mediumRiskRevenue = Math.round(sumRisk(mediumRiskDeals));\nconst totalRevenueAtRisk = highRiskRevenue + mediumRiskRevenue;\n\n// Priority: HIGH before MEDIUM, then revenue at risk, then days in stage\nconst tierRank = { HIGH: 2, MEDIUM: 1 };\nconst topRiskDeals = [...highRiskDeals, ...mediumRiskDeals]\n  .sort((a, b) =>\n    (tierRank[b.risk_level] - tierRank[a.risk_level]) ||\n    (b.revenue_at_risk - a.revenue_at_risk) ||\n    (b.days_in_stage - a.days_in_stage)\n  )\n  .slice(0, 3);\n\n// One line per deal: tier, name, amount, stage age vs SLA, activity, owner\nconst tierEmoji = { HIGH: '🔴', MEDIUM: '🟡' };\nconst topDealsText = topRiskDeals.length\n  ? topRiskDeals.map((d, i) =>\n      `${i + 1}. ${tierEmoji[d.risk_level]} *${d.deal_name}* · ${fmtShort(d.amount)} · ` +\n      `${d.stage} ${d.days_in_stage}d (SLA ${d.sla_threshold}) · ${d.activity_short} · ${d.owner_name}`\n    ).join('\\n')\n  : '✅ No deals at risk this week';\n\n// Data quality check: open deals with no activity ever logged, deals that can't be classified\nconst warningShare = Number(cfg.dataQualityWarningShare ?? 0.5);\nconst noActivityCount = openDeals.filter(d => d.days_since_activity === null).length;\nconst unclassifiedCount = deals.filter(d => d.data_issue).length;\nconst dataIssues = [];\nif (openDeals.length && noActivityCount / openDeals.length >= warningShare) {\n  dataIssues.push(`${noActivityCount} of ${openDeals.length} open deals have no activity logged`);\n}\nif (unclassifiedCount) {\n  dataIssues.push(`${unclassifiedCount} deal${unclassifiedCount > 1 ? 's' : ''} could not be classified (unknown stage or missing stage date)`);\n}\nconst dataQualityText = dataIssues.length\n  ? `⚠️ Data check: ${dataIssues.join('; ')}. Check CRM logging.`\n  : null;\n\nreturn {\n  json: {\n    totalAtRisk,\n    highRiskCount,\n    mediumRiskCount,\n    openDealCount: openDeals.length,\n    inactiveOpenCount,\n    noActivityCount,\n    unclassifiedCount,\n    highRiskRevenue,\n    mediumRiskRevenue,\n    totalRevenueAtRisk,\n    highRiskRevenueFormatted: fmt(highRiskRevenue),\n    mediumRiskRevenueFormatted: fmt(mediumRiskRevenue),\n    totalRevenueAtRiskFormatted: fmt(totalRevenueAtRisk),\n    topRiskDeals,\n    topDealsText,\n    dataQualityText\n  }\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1248,
+        464
+      ],
+      "id": "d80ebdf2-8b81-4e5b-a2e8-1e6585d1b13c",
+      "name": "Create Risk Summary"
+    },
+    {
+      "parameters": {
+        "authentication": "serviceAccount",
+        "documentId": {
+          "__rl": true,
+          "value": "YOUR_GOOGLE_SHEET_URL",
+          "mode": "url"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Weekly_Trend_Tracker_Simple",
+          "mode": "name"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.3,
+      "position": [
+        1360,
+        96
+      ],
+      "id": "604a0482-e87d-4cb5-9fdd-ed272b1a6bc4",
+      "name": "Read Trend History",
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// Calculate Trend: week-over-week at-risk comparison (history from Google Sheets)\nconst summary = $('Create Risk Summary').first().json;\nconst currentAtRisk = summary.totalAtRisk || 0;\nconst todayStr = $today.toFormat('yyyy-MM-dd');\n\n// Sheet rows: drop empty rows and today's row (so manual re-runs don't compare against themselves)\nconst history = $input.all()\n  .map(item => item.json)\n  .filter(r =>\n    r['At-Risk Count'] !== undefined &&\n    r['At-Risk Count'] !== '' &&\n    String(r['Week Of']) !== todayStr\n  );\n\nconst lastRow = history.length ? history[history.length - 1] : null;\nconst previousWeekAtRisk = lastRow ? Number(lastRow['At-Risk Count']) : null;\n\nlet trend = 0, trendPercent = 0, trendEmoji, trendLabel, trendString, trendShort;\n\nif (previousWeekAtRisk === null || Number.isNaN(previousWeekAtRisk)) {\n  // First run: no history yet\n  trendEmoji = '⚪';\n  trendLabel = 'Baseline';\n  trendString = '⚪ Baseline week (no history yet)';\n  trendShort = '⚪ baseline week';\n} else {\n  trend = currentAtRisk - previousWeekAtRisk;\n  trendPercent = previousWeekAtRisk > 0\n    ? Math.round((trend / previousWeekAtRisk) * 100)\n    : 0;\n\n  if (trend > 0)      { trendEmoji = '🔴'; trendLabel = 'Worse'; }\n  else if (trend < 0) { trendEmoji = '🟢'; trendLabel = 'Better'; }\n  else                { trendEmoji = '⚪'; trendLabel = 'Flat'; }\n\n  trendString = trend !== 0\n    ? `${trendEmoji} ${trend > 0 ? '+' : ''}${trend} deals (was ${previousWeekAtRisk})`\n    : `${trendEmoji} Flat (was ${previousWeekAtRisk} deals)`;\n  trendShort = trend !== 0\n    ? `${trendEmoji} ${trend > 0 ? '+' : ''}${trend} vs last week`\n    : '⚪ flat vs last week';\n}\n\nreturn {\n  json: {\n    ...summary,\n    currentAtRisk,\n    previousWeekAtRisk,\n    trend,\n    trendPercent,\n    trendEmoji,\n    trendLabel,\n    trendString,\n    trendShort\n  }\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1584,
+        464
+      ],
+      "id": "dd4e5c8a-08a3-4b91-ad33-5f20c89ae7ce",
+      "name": "Calculate Trend"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Calculate Stage Stats (v2.0)\n// Two lenses per stage:\n//  1. Velocity (historical): median days deals spent in the stage, for deals that EXITED it\n//     within the lookback window. This drives bottlenecks and slowest/fastest stage.\n//  2. Aging (current): average days the OPEN deals have been sitting in the stage.\nconst deals = $input.all().map(d => d.json);\nconst cfg = $('Pipeline Settings').first().json;\nconst CURRENCY = cfg.currency || '';\nconst fmt = n => CURRENCY + Math.round(n || 0).toLocaleString('en-US');\nconst lookbackDays = Number(cfg.velocityLookbackDays ?? 90);\nconst minSample = Number(cfg.velocityMinSample ?? 3);\nconst cutoff = new Date(Date.now() - lookbackDays * 24 * 60 * 60 * 1000);\n\nconst median = arr => {\n  if (!arr.length) return null;\n  const s = [...arr].sort((a, b) => a - b);\n  const mid = Math.floor(s.length / 2);\n  return s.length % 2 ? s[mid] : (s[mid - 1] + s[mid]) / 2;\n};\nconst round1 = n => (n === null ? null : Math.round(n * 10) / 10);\nconst sumRisk = list => list.reduce((sum, d) => sum + d.revenue_at_risk, 0);\n\nconst stages = cfg.stages.map(s => s.name);\nconst sla = {};\ncfg.stages.forEach(s => { sla[s.name] = Number(s.slaDays); });\n\nconst stageStats = {};\nstages.forEach(stage => {\n  // Current (open deals in this stage)\n  const openDeals = deals.filter(\n    d => d.stage === stage && d.risk_level !== 'CLOSED' && d.risk_level !== 'UNKNOWN'\n  );\n  const highDeals = openDeals.filter(d => d.risk_level === 'HIGH');\n  const mediumDeals = openDeals.filter(d => d.risk_level === 'MEDIUM');\n  const openAvgDays = openDeals.length\n    ? Math.round(openDeals.reduce((sum, d) => sum + d.days_in_stage, 0) / openDeals.length)\n    : 0;\n\n  // Historical (any deal, open or closed, that exited this stage in the lookback window)\n  const durations = deals\n    .map(d => d.stage_history && d.stage_history[stage])\n    .filter(h => h && new Date(h.exitedAt) >= cutoff)\n    .map(h => h.days);\n  const velocitySample = durations.length;\n  const velocityMedianDays = velocitySample >= minSample ? round1(median(durations)) : null;\n\n  stageStats[stage] = {\n    sla: sla[stage],\n    velocityMedianDays,\n    velocitySample,\n    openAvgDays,\n    dealCount: openDeals.length,\n    highRisk: highDeals.length,\n    mediumRisk: mediumDeals.length,\n    atRiskCount: highDeals.length + mediumDeals.length,\n    highRiskRevenue: Math.round(sumRisk(highDeals)),\n    mediumRiskRevenue: Math.round(sumRisk(mediumDeals)),\n    stageRevenueAtRisk: Math.round(sumRisk(openDeals)),\n    // Aging: open deals already sit longer than SLA on average\n    aging: openDeals.length > 0 && openAvgDays > sla[stage]\n  };\n});\n\n// Slowest / fastest stage by historical velocity, relative to SLA (stages differ in length)\nconst measured = stages.filter(s => stageStats[s].velocityMedianDays !== null);\nconst ratio = s => stageStats[s].velocityMedianDays / stageStats[s].sla;\nconst byRatio = [...measured].sort((a, b) => ratio(b) - ratio(a));\nconst slowestStage = byRatio[0] || null;\nconst fastestStage = byRatio.length ? byRatio[byRatio.length - 1] : null;\nconst slowestAvgDays = slowestStage ? stageStats[slowestStage].velocityMedianDays : 0;\nconst fastestAvgDays = fastestStage ? stageStats[fastestStage].velocityMedianDays : 0;\n\n// Bottlenecks: typical (median) time in stage above SLA\nconst bottlenecks = measured\n  .filter(s => stageStats[s].velocityMedianDays > stageStats[s].sla)\n  .map(s => ({\n    stage: s,\n    medianDays: stageStats[s].velocityMedianDays,\n    sla: stageStats[s].sla,\n    daysOverSla: round1(stageStats[s].velocityMedianDays - stageStats[s].sla),\n    sample: stageStats[s].velocitySample,\n    openDeals: stageStats[s].dealCount,\n    atRiskCount: stageStats[s].atRiskCount\n  }))\n  .sort((a, b) => b.daysOverSla - a.daysOverSla);\n\nconst agingStages = stages.filter(s => stageStats[s].aging);\n\nconst bottleneckWarnings = bottlenecks\n  .map(b => `• ${b.stage}: typically ${b.medianDays} days (SLA ${b.sla}, +${b.daysOverSla}) | based on ${b.sample} deals`)\n  .join('\\n');\n\n// Slack text blocks\nconst stageBreakdownText = stages\n  .map(stage => {\n    const s = stageStats[stage];\n    const velocity = s.velocityMedianDays !== null\n      ? `typically ${s.velocityMedianDays}d (n=${s.velocitySample})`\n      : `typical time n/a (n=${s.velocitySample})`;\n    return `• ${stage}: ${s.atRiskCount} at risk of ${s.dealCount} open | ${velocity} vs SLA ${s.sla}d | open avg ${s.openAvgDays}d`;\n  })\n  .join('\\n');\n\nconst pipelineHealthText = slowestStage\n  ? `• Slowest vs SLA: ${slowestStage} (typically ${slowestAvgDays} days, SLA ${stageStats[slowestStage].sla})\\n` +\n    `• Fastest vs SLA: ${fastestStage} (typically ${fastestAvgDays} days, SLA ${stageStats[fastestStage].sla})\\n` +\n    `_Typical = median for deals that left the stage in the last ${lookbackDays} days_`\n  : `• Not enough stage history yet (needs ${minSample}+ deals per stage in the last ${lookbackDays} days)`;\n\nlet bottleneckText = bottlenecks.length\n  ? `⚠️ ${bottlenecks.length} bottleneck${bottlenecks.length > 1 ? 's' : ''} (typical time above SLA):\\n${bottleneckWarnings}`\n  : (measured.length ? '✅ No bottlenecks: typical stage times within SLA' : '');\nif (agingStages.length) {\n  bottleneckText += `${bottleneckText ? '\\n' : ''}⏳ Aging now (open deals avg above SLA): ${agingStages.map(s => `${s} (${stageStats[s].openAvgDays}d)`).join(', ')}`;\n}\n\n// One-line summary for the Slack digest\nconst bottleneckLine = bottlenecks.length\n  ? `⚠️ Bottleneck${bottlenecks.length > 1 ? 's' : ''}: ` +\n    bottlenecks.map(b => `${b.stage} (typically ${b.medianDays}d vs ${b.sla}d SLA)`).join(', ')\n  : (measured.length\n      ? '✅ No bottlenecks: typical stage times within SLA'\n      : 'ℹ️ Not enough history for bottlenecks yet');\n\nreturn {\n  json: {\n    bottleneckLine,\n    stageStats,\n    slowestStage,\n    slowestAvgDays,\n    fastestStage,\n    fastestAvgDays,\n    bottleneckCount: bottlenecks.length,\n    bottlenecks,\n    agingStages,\n    bottleneckWarnings,\n    stageBreakdownText,\n    pipelineHealthText,\n    bottleneckText\n  }\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1584,
+        672
+      ],
+      "id": "655d38e0-c1cd-447a-a9f2-22934845ddcf",
+      "name": "Calculate Stage Stats"
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "combinationMode": "mergeByPosition",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 2.1,
+      "position": [
+        1936,
+        560
+      ],
+      "id": "d182d6c4-b923-48f1-a084-4764fc6bc98b",
+      "name": "Merge Results"
+    },
+    {
+      "parameters": {
+        "authentication": "serviceAccount",
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "value": "YOUR_GOOGLE_SHEET_URL",
+          "mode": "url"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Weekly_Trend_Tracker_Simple",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Week Of": "={{ $today.toFormat('yyyy-MM-dd') }}",
+            "At-Risk Count": "={{ $json.totalAtRisk }}",
+            "Trend %": "={{ $json.trendPercent/100 }}",
+            "Revenue at Risk": "={{ $json.totalRevenueAtRisk }}",
+            "Bottleneck Count": "={{ $json.bottleneckCount }}",
+            "Slowest Stage": "={{ $json.slowestStage }}",
+            "Previous Week Count": "={{ $json.previousWeekAtRisk }}"
+          },
+          "matchingColumns": [
+            "Week Of"
+          ],
+          "schema": [
+            {
+              "id": "Week Of",
+              "displayName": "Week Of",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "At-Risk Count",
+              "displayName": "At-Risk Count",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Previous Week Count",
+              "displayName": "Previous Week Count",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Trend %",
+              "displayName": "Trend %",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Revenue at Risk",
+              "displayName": "Revenue at Risk",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Slowest Stage",
+              "displayName": "Slowest Stage",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Bottleneck Count",
+              "displayName": "Bottleneck Count",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Notes",
+              "displayName": "Notes",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.3,
+      "position": [
+        1936,
+        96
+      ],
+      "id": "aea16fbf-b631-4ba8-b8e5-a9941d963da1",
+      "name": "Save Weekly Snapshot"
+    },
+    {
+      "parameters": {
+        "authentication": "oAuth2",
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "value": "YOUR_SLACK_CHANNEL_ID",
+          "mode": "id"
+        },
+        "text": "={{ [\n  `📊 *Pipeline Brief · ${$now.toFormat('d LLL yyyy')}*`,\n  `*${$json.totalRevenueAtRiskFormatted} at risk* · ${$json.totalAtRisk} of ${$json.openDealCount} open deals · ${$json.trendShort}`,\n  `🔴 ${$json.highRiskCount} HIGH · 🟡 ${$json.mediumRiskCount} MEDIUM`,\n  $json.dataQualityText,\n  '',\n  $json.bottleneckLine,\n  '',\n  '*Act on these first:*',\n  $json.topDealsText\n].filter(line => line !== null && line !== undefined).join('\\n') }}",
+        "otherOptions": {
+          "includeLinkToWorkflow": false
+        }
+      },
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.1,
+      "position": [
+        2256,
+        560
+      ],
+      "id": "b340a968-53e2-4717-ae26-4fff03f3afbe",
+      "name": "Post Slack Digest"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Every Friday 8 AM": {
+      "main": [
+        [
+          {
+            "node": "Pipeline Settings",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pipeline Settings": {
+      "main": [
+        [
+          {
+            "node": "Get HubSpot Owners",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get HubSpot Owners": {
+      "main": [
+        [
+          {
+            "node": "Get All HubSpot Deals",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get All HubSpot Deals": {
+      "main": [
+        [
+          {
+            "node": "Calculate Days & Risk",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Calculate Days & Risk": {
+      "main": [
+        [
+          {
+            "node": "Create Risk Summary",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Calculate Stage Stats",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Risk Summary": {
+      "main": [
+        [
+          {
+            "node": "Read Trend History",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Trend History": {
+      "main": [
+        [
+          {
+            "node": "Calculate Trend",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Calculate Trend": {
+      "main": [
+        [
+          {
+            "node": "Merge Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Calculate Stage Stats": {
+      "main": [
+        [
+          {
+            "node": "Merge Results",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Merge Results": {
+      "main": [
+        [
+          {
+            "node": "Post Slack Digest",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Save Weekly Snapshot",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Europe/Berlin"
+  },
+  "meta": {
+    "templateCredsSetupCompleted": false
+  },
+  "tags": []
+}
