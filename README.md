@@ -1,172 +1,200 @@
 # Pipeline Velocity Bottleneck Detection
 
-Automated weekly pipeline health reporting for B2B SaaS sales teams. Detects deal stalls, identifies bottleneck stages, and quantifies revenue at risk—all delivered automatically every Friday morning.
+Automated weekly pipeline health reporting for B2B SaaS sales teams. Detects deal stalls, identifies bottleneck stages, and quantifies revenue at risk, delivered to Slack every Friday morning.
+
+**Current version:** v1.3 (template-ready). See [CHANGELOG](#changelog).
 
 ## Problem
 
-Sales leadership lacks systematic visibility into pipeline velocity. Manual reporting is time-consuming (45+ min/week), bottleneck detection is anecdotal ("Discovery feels slow"), and revenue risk is quantified. This delays intervention and blocks data-driven decision-making.
+Sales leadership lacks systematic visibility into pipeline velocity. Manual reporting is time-consuming (45+ min/week), bottleneck detection is anecdotal ("Discovery feels slow"), and revenue risk isn't quantified. This delays intervention and blocks data-driven decision-making.
 
 ## Solution
 
 An n8n automation that runs weekly (Friday, 8 AM) to:
-- Fetch all open deals from HubSpot
-- Calculate days-in-stage and classify risk (HIGH/MEDIUM/OK) based on SLA thresholds
-- Detect bottleneck stages where SLA is consistently breached
-- Quantify revenue at risk using tiered loss probability (HIGH 40%, MEDIUM 15%)
-- Post a formatted Slack summary for leadership review
-- Track week-over-week trends automatically
+- Load pipeline rules (stages, SLAs, currency, loss probabilities) from one settings node
+- Fetch HubSpot owners and all deals
+- Calculate days in current stage and classify risk (HIGH/MEDIUM/OK) against each stage's SLA
+- Quantify revenue at risk using tiered loss probabilities (HIGH 40%, MEDIUM 15%)
+- Detect bottleneck stages where the average time in stage exceeds the SLA
+- Track week-over-week trends in Google Sheets
+- Post a formatted Slack digest with owner names for leadership review
 
 ## Architecture
 
 ### Workflow Components
 
-1. **Schedule Trigger** — Runs every Friday, 8 AM (Berlin time)
-2. **Get Deals** — HubSpot API query of all open deals
-3. **Calculate Days & Risk** — JavaScript: normalizes stage names, calculates days-in-stage, classifies risk, computes revenue at risk
-4. **Aggregate Summary** — Counts at-risk deals by risk level, extracts top 3 high-risk deals
-5. **Calculate Trends** — Week-over-week comparison using Google Sheets baseline
-6. **Calculate Stage Stats** — Identifies slowest/fastest stages, detects bottlenecks
-7. **Merge Results** — Combines trend and stage data
-8. **Post Slack Digest** — Formatted message to #all-ai-automation
-9. **Update Config** — Auto-updates Google Sheets with current week's at-risk count
+1. **Every Friday 8 AM** (Schedule Trigger): runs weekly; timezone comes from the workflow settings
+2. **Pipeline Settings** (Edit Fields): central config for stage IDs and names, SLA days, currency, MEDIUM threshold and loss probabilities
+3. **Get HubSpot Owners** (HTTP Request): maps owner IDs to names; continues with IDs if the request fails
+4. **Get All HubSpot Deals** (HubSpot): fetches all deals with a defined property list
+5. **Calculate Days & Risk** (Code): maps stages, calculates days in stage, classifies risk, computes revenue at risk, flags data issues
+6. **Create Risk Summary** (Code): counts at-risk deals, splits revenue at risk into HIGH/MEDIUM, ranks the top 3 deals
+7. **Read Trend History** (Google Sheets): reads previous weekly snapshots
+8. **Calculate Trend** (Code): week-over-week comparison; reports a baseline week on the first run
+9. **Calculate Stage Stats** (Code): average days per stage, slowest/fastest stage, bottlenecks
+10. **Merge Results**: combines trend and stage data
+11. **Post Slack Digest** (Slack): posts the weekly brief
+12. **Save Weekly Snapshot** (Google Sheets): writes one row per week, matched on `Week Of`
 
 ### Data Flow
 
 ```
-HubSpot API
+[Every Friday 8 AM]
     ↓
-[Fetch Deals]
+[Pipeline Settings] → stages, SLAs, currency, loss probabilities
     ↓
-[Calculate Risk] → normalized deals + risk classification
+[Get HubSpot Owners] → owner ID → name map
     ↓
-[Aggregate] → summary data
+[Get All HubSpot Deals]
     ↓
-[Trend] → WoW comparison
-    ↓
-[Stage Stats] → bottleneck detection
-    ↓
-[Merge & Post] → Slack briefing
-    ↓
-[Update Config] → Google Sheets baseline
+[Calculate Days & Risk] → normalized deals + risk tier + revenue at risk
+    ↓                        ↓
+[Create Risk Summary]    [Calculate Stage Stats] → bottlenecks
+    ↓                        │
+[Read Trend History]         │
+    ↓                        │
+[Calculate Trend] → WoW      │
+    ↓                        ↓
+[Merge Results] ─→ [Post Slack Digest]
+                └→ [Save Weekly Snapshot] → Google Sheets
 ```
 
 ## Configuration
 
+All business rules live in the **Pipeline Settings** node. Edit its JSON to match your pipeline; the code nodes don't need changes.
+
 ### SLA Thresholds (Days in Stage)
 
-| Stage | SLA | Rationale |
-|---|---|---|
-| Qualified Lead | 5 | Entry point; fast movement expected |
-| Discovery | 5 | Fact-finding; should be quick |
-| Proposal/Demo | 21 | Complex selling cycle; more time needed |
-| Negotiation | 14 | Final stage; delays indicate stalled deals |
+| Stage | HubSpot stage ID (default pipeline) | SLA | Rationale |
+|---|---|---|---|
+| Qualified Lead | `appointmentscheduled` | 5 | Entry point; fast movement expected |
+| Discovery | `qualifiedtobuy` | 5 | Fact-finding; should be quick |
+| Proposal/Demo | `presentationscheduled` | 21 | Complex selling cycle; more time needed |
+| Negotiation | `decisionmakerboughtin` | 14 | Final stage; delays indicate stalled deals |
 
-Adjust thresholds in the "Calculate Days & Risk" node to match your actual sales cycle.
+Find your own stage IDs in HubSpot under Settings → Objects → Deals → Pipelines. Open deals in stages that aren't listed are flagged as `stage_not_in_pipeline_settings` and excluded from the risk calculation.
 
 ### Risk Classification
 
-- **HIGH:** Days in stage > SLA threshold (40% loss probability)
-- **MEDIUM:** Days in stage > (SLA × 0.7) (15% loss probability)
-- **OK:** Days in stage ≤ (SLA × 0.7) (0% loss probability)
+- **HIGH:** days in stage > SLA (40% loss probability)
+- **MEDIUM:** days in stage > SLA × 0.7 (15% loss probability)
+- **OK:** days in stage ≤ SLA × 0.7 (0%)
 
-**Note:** Loss probabilities are estimates based on deal age vs. SLA. Validate against your historical close rates and adjust percentages as needed.
+The 0.7 threshold and both probabilities are set in Pipeline Settings (`mediumThresholdShare`, `lossProbabilityHigh`, `lossProbabilityMedium`).
+
+**Note:** Loss probabilities are estimates based on deal age vs. SLA. Validate them against your historical close rates and adjust as needed.
 
 ## Setup
 
 ### Prerequisites
 
 - n8n instance (self-hosted or cloud)
-- HubSpot account with API access
-- Google Sheets account
-- Slack workspace with bot access
+- HubSpot account (free tier works) with a private app
+- Google account with a service account for Sheets
+- Slack workspace
 
 ### Steps
 
-1. **Create n8n Workflow**
-   - Import the workflow JSON from this repository
-   - Update credentials for HubSpot, Google Sheets, Slack
+1. **Import the workflow**
+   - In n8n: ⋯ → Import from File → `hubspot-Pipeline-Velocity-Bottleneck-Detection-v1.3.json`
+   - The JSON contains no credentials; you'll connect your own in the next steps
 
-2. **Configure HubSpot Connection**
-   - Generate a private app token with "CRM → Deals (read)" scope
-   - Enter token in n8n HubSpot node
+2. **Connect HubSpot**
+   - Create a private app with scopes `crm.objects.deals.read` and `crm.objects.owners.read`
+   - Add the token as a *HubSpot App Token* credential in **Get HubSpot Owners** and **Get All HubSpot Deals**
 
-3. **Set Up Google Sheets**
-   - Create a sheet named "Weekly_Trend_Tracker_Simple"
-   - Column A: Week date
-   - Column B: At-risk deal count
-   - Share with n8n service account (if using API)
+3. **Set up Google Sheets**
+   - Create a sheet tab named `Weekly_Trend_Tracker_Simple` with these headers in row 1: `Week Of`, `At-Risk Count`, `Previous Week Count`, `Trend %`, `Revenue at Risk`, `Slowest Stage`, `Bottleneck Count`, `Notes`
+   - Format the `Week Of` column as **Plain text** (otherwise date matching fails and rows get duplicated)
+   - Share the sheet with your service account as Editor
+   - Paste the sheet URL into **Read Trend History** and **Save Weekly Snapshot**
 
-4. **Configure Slack Webhook**
-   - Create an incoming webhook in your Slack workspace
-   - Point to channel #all-ai-automation (or your preferred channel)
-   - Add webhook URL to n8n Slack node
+4. **Connect Slack**
+   - Connect your Slack account (OAuth2) in **Post Slack Digest**
+   - Replace `YOUR_SLACK_CHANNEL_ID` with your channel's ID and invite the app to that channel
 
-5. **Schedule Trigger**
-   - Set to "Every Friday, 08:00 AM" (or your preferred time)
-   - Timezone: Europe/Berlin (adjust as needed)
+5. **Edit Pipeline Settings**
+   - Replace the stage IDs, SLA days and currency with your own
 
-6. **Test**
-   - Manually trigger the workflow
-   - Verify Slack message posts correctly
-   - Confirm Google Sheets baseline updates
+6. **Check the schedule**
+   - Default: every Friday, 08:00
+   - Set the timezone under workflow Settings → Timezone
+
+7. **Test**
+   - Run the workflow manually; the first run creates the baseline row
+   - Verify the Slack message and the new row in Google Sheets
+   - Activate the workflow
 
 ## Example Output
 
 ```
 📊 *Pipeline Velocity Brief*
 
-⚠️ *Deals at Risk:* 12 deals | $145,000
-📈 *vs Last Week:* 🟢 -2 deals (was 14)
+⚠️ *Revenue at Risk:* €46,500 across 9 deals
+🔴 HIGH (likely loss): €38,000 | 5 deals
+🟡 MEDIUM (possible loss): €8,500 | 4 deals
+📈 *vs Last Week:* 🟢 -2 deals (was 11)
 
 *By Stage:*
-• Qualified Lead: 1
-• Discovery: 5
-• Proposal/Demo: 4
-• Negotiation: 2
+• Qualified Lead: 1 at risk of 6 open (HIGH: €0)
+• Discovery: 4 at risk of 7 open (HIGH: €20,000)
+• Proposal/Demo: 3 at risk of 5 open (HIGH: €12,000)
+• Negotiation: 1 at risk of 3 open (HIGH: €6,000)
 
 *Pipeline Health:*
-• Slowest: Proposal/Demo (avg 18 days)
+• Slowest: Proposal/Demo (avg 16 days)
 • Fastest: Qualified Lead (avg 2 days)
+⚠️ 1 bottleneck (stage avg above SLA):
+• Discovery: 7 days avg (SLA: 5, +2 days over)
 
-1 Bottlenecks
-⚠️ Proposal/Demo: 18 days avg (SLA: 21, -3 days OK)
-
-*Highest Risk Deals:*
-1️⃣ *BigCorp Expansion*
-• Stage: Discovery | Amount: $75K | Owner: @mike
-
-2️⃣ *TechStart Migration*
-• Stage: Proposal/Demo | Amount: $45K | Owner: @sarah
-
-3️⃣ *Enterprise Deal*
-• Stage: Discovery | Amount: $25K | Owner: @carlos
+*Highest Risk Deals (Priority Order):*
+1️⃣ *BigCorp Expansion* [HIGH]
+• Stage: Discovery (9 days, SLA 5) | Amount: €50,000 | Owner: Mike Jensen
+2️⃣ *TechStart Migration* [HIGH]
+• Stage: Proposal/Demo (25 days, SLA 21) | Amount: €30,000 | Owner: Sarah Klein
+3️⃣ *Enterprise Deal* [HIGH]
+• Stage: Negotiation (16 days, SLA 14) | Amount: €15,000 | Owner: Carlos Ruiz
 ```
+
+*Example data is illustrative.*
 
 ## Troubleshooting
 
 ### Briefing not posting to Slack
-- Verify Slack webhook URL is current (regenerate if needed)
-- Check n8n logs for API errors in the "Post Slack Digest" node
-- Ensure channel exists and bot has permission to post
+- Check that the Slack credential in **Post Slack Digest** is still connected
+- Confirm the channel ID is correct and the Slack app is invited to the channel
+- Check the execution log for errors in **Post Slack Digest**
 
-### Missing or stale data in briefing
-- Verify HubSpot API credentials are valid
-- Check that "Get many deals" node is fetching all expected deals
-- Confirm stage names in n8n match HubSpot's internal IDs (e.g., "qualifiedtobuy" not "Qualified Lead")
+### Owner IDs shown instead of names
+- Add the scope `crm.objects.owners.read` to your HubSpot private app
+- Check the output of **Get HubSpot Owners**; the workflow continues with IDs if this request fails
 
-### Google Sheets baseline not updating
-- Verify Google Sheets credentials in n8n
-- Check that sheet tab name and range match configuration
-- Confirm bot has "Editor" access to the sheet
+### Deals missing from the briefing
+- Check that **Get All HubSpot Deals** returns all expected deals
+- Confirm the stage IDs in **Pipeline Settings** match HubSpot's internal IDs (e.g. `qualifiedtobuy`, not "Discovery")
+- Look for `data_issue` flags in the output of **Calculate Days & Risk**
 
-### Incorrect risk classifications
-- Review SLA thresholds in "Calculate Days & Risk" node
-- Verify date calculations: `Math.floor((now - createdate) / (1000 * 60 * 60 * 24))`
-- Test with a specific deal by manually running the workflow
+### Trend not calculating or duplicate rows in Google Sheets
+- Verify the Google credential and that the service account has Editor access
+- Check that the tab name and headers match exactly
+- Make sure the `Week Of` column is formatted as plain text
+
+### Unexpected risk classifications
+- Review the SLA days and thresholds in **Pipeline Settings**
+- Days in stage are calculated from HubSpot's `hs_v2_date_entered_current_stage`: `Math.floor((today - stageEntryDate) / (1000 * 60 * 60 * 24))`
 
 ## Design Note: Revenue-at-Risk Calculation
 
-The workflow uses tiered loss probabilities (HIGH 40%, MEDIUM 15%) based on deal age vs. SLA. This assumes these percentages correlate with actual close rates. **Important:** Validate these percentages against your historical data and adjust as needed.
+The workflow uses tiered loss probabilities (HIGH 40%, MEDIUM 15%) based on deal age vs. SLA. This assumes these percentages correlate with actual close rates. **Important:** validate them against your historical data and adjust them in Pipeline Settings.
+
+## Changelog
+
+### v1.3: Template-ready release
+- Added HubSpot owner lookup (names instead of IDs in Slack)
+- Added Pipeline Settings node: stages, SLAs, currency and loss probabilities in one place
+- Added data quality flags for unmapped stages and missing stage entry dates
+- Added Overview & Setup sticky note; renamed nodes to descriptive names
+- Removed credential references, instance IDs and company-specific comments from the JSON
 
 ## License
 
